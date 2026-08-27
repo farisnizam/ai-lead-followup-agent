@@ -55,8 +55,13 @@ def seed() -> None:
     Base.metadata.create_all(bind=engine)
     db = SessionLocal()
     try:
-        db.query(Message).delete()
-        db.query(Lead).delete()
+        # Query(Model).delete() is a bulk SQL DELETE - it does not go through
+        # the ORM identity map, so the cascade="all, delete-orphan" on Lead's
+        # relationships (messages, agent_decisions, actions, ...) never
+        # fires and this fails once a lead has any of those child rows.
+        # db.delete(instance) does honor those cascades.
+        for lead in db.query(Lead).all():
+            db.delete(lead)
         db.commit()
 
         for entry in SAMPLE_LEADS:

@@ -1,25 +1,47 @@
+import logging
 import uuid
 
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session, selectinload
 
+from app.agent.client import AgentClient, get_agent_client
+from app.agent.core import decide_next_action
 from app.db import get_db
 from app.models import Lead, Message, MessageDirection
 from app.schemas import LeadCreate, LeadDetail, LeadRead, LeadUpdate
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/leads", tags=["leads"])
 
 
 @router.post("", response_model=LeadDetail, status_code=201)
-def create_lead(payload: LeadCreate, db: Session = Depends(get_db)) -> Lead:
+def create_lead(
+    payload: LeadCreate,
+    db: Session = Depends(get_db),
+    agent_client: AgentClient = Depends(get_agent_client),
+) -> Lead:
     """Ingest a lead from the landing page form, recording its initial message
     as the first inbound Message so it appears in the same timeline later
-    replies will use."""
+    replies will use, then let the agent decide the next action.
+
+    Agent failures never fail lead ingestion: decide_next_action already
+    catches its own failure modes and records them, but this still wraps the
+    call as a second line of defense (e.g. against a DB error mid-decision)
+    so a lead is never lost to an agent-side problem.
+    """
     lead = Lead(name=payload.name, email=payload.email, source=payload.source)
     lead.messages.append(Message(direction=MessageDirection.IN, body=payload.message))
     db.add(lead)
     db.commit()
     db.refresh(lead)
+
+    try:
+        decide_next_action(db, lead, trigger_event="lead_created", client=agent_client)
+        db.refresh(lead)
+    except Exception:
+        logger.exception("Agent decision failed for lead %s; lead was still created", lead.id)
+
     return lead
 
 

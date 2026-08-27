@@ -55,3 +55,77 @@
 - Manual smoke test: ran `uvicorn` against the dev database and exercised `/health`, `POST
   /leads`, `GET /leads`, `GET /leads/{id}` (incl. a 404 case) with `curl` — confirmed the full
   docker-compose → Alembic → FastAPI path works end-to-end, not just through `TestClient`.
+
+## Milestone 2 — agent core
+
+**Stack/design decisions**
+- One `client.messages.create(...)` call per trigger event, not a multi-turn tool loop: all 5
+  DESIGN.md §7 tools are defined as `strict: true` Anthropic tools with
+  `tool_choice: {"type": "any"}` (must call exactly one, no free-text reply). Each tool's input
+  schema shares a common `intent` (the existing `LeadIntent` enum) + `rationale` base, so
+  classification, decision, and rationale all come out of a single call.
+- Tool input schemas are Pydantic models (`app/agent/schemas.py`), not hand-written JSON —
+  they're the single source of truth for both the Anthropic `input_schema` (generated via
+  `model_json_schema()`) and the defensive re-validation of whatever the model returns
+  (`app/agent/core.py`). This is what turns DESIGN.md §8's "tool-call schema validation before
+  execution" into actual code, and it's independent of Anthropic's own `strict` enforcement — our
+  validation still runs even if a client (real or, in tests, fake) hands back something the
+  Anthropic API itself would never have produced.
+- Pydantic's `model_json_schema()` emits enum fields as a `$ref` into `$defs`; Anthropic's strict
+  tool schemas expect a flat object, so `app/agent/tools.py` inlines those refs before building
+  the tool definition. Verified empirically by printing the generated schemas — flat as expected,
+  no leftover `$ref`/`$defs`.
+- Chain-of-thought is never requested or stored: no `thinking` block is asked for, and the only
+  reasoning captured is the model's own `rationale` field (instructed to be 1–3 sentences), which
+  is what's stored in `AgentDecision.rationale_summary`.
+- Stub-only execution is uniform across all 5 tools this milestone: every decision writes an
+  `AgentDecision` + one `Action` row (`status=pending`) and nothing else — no `Message`,
+  `FollowupSchedule`, or `EscalationEvent` rows, no `Lead.status` change, regardless of which
+  tool was chosen. The one field updated directly is `Lead.current_intent`, since classification
+  isn't one of the 5 tools — it's the agent's classification output, already modeled as plain
+  `Lead` state in DESIGN.md.
+- `decide_next_action` is wired into `POST /leads` only (`trigger_event="lead_created"`),
+  matching DESIGN.md §2's core loop ("a lead is submitted → the agent reads context and decides
+  an action"). No reply endpoint or scheduler trigger yet — those are later milestones.
+- Resilience: `decide_next_action` never raises. Client/validation failures are caught internally
+  and persisted as an `AgentDecision` with `decision="invalid_output"`; the router also wraps the
+  call in a broad `try/except` as a second line of defense. Verified this contract holds all the
+  way through the live endpoint, not just in the unit function.
+- Automated tests never hit the real Anthropic API: the `client` test fixture defaults the agent
+  client override to one that fails immediately and offline
+  (`tests/fakes.py::always_fails`), so all 9 Milestone 1 tests keep passing unmodified. Tests
+  specific to agent behavior reconfigure a mutable holder fixture per test.
+
+**Issues hit and fixed during implementation**
+- **Uncaught `TypeError` from missing credentials**: caught by the manual smoke test, not by the
+  automated suite. When no Anthropic credentials resolve at all (no `ANTHROPIC_API_KEY`, no `ant`
+  profile), the SDK raises a plain `TypeError` from header validation *before* attempting any
+  request — not an `anthropic.APIError` subclass. `AnthropicAgentClient.decide` only caught
+  `anthropic.APIError`, so this specific failure mode propagated past `decide_next_action`'s own
+  exception handling entirely; only the router's second-line `try/except` caught it, and no
+  `AgentDecision` row got written — the audit trail silently lost that failure. Fixed by also
+  catching `TypeError` in the client and normalizing it to `AgentDecisionError` like every other
+  failure mode. Added a regression test using the real `AnthropicAgentClient` (safe/offline,
+  since this specific error fires before any network call) so this doesn't require a live smoke
+  test to catch again.
+- **`scripts/seed.py`'s cleanup broke once leads had child rows beyond `messages`**: the reset
+  step used `db.query(Model).delete()` (a bulk SQL `DELETE`), which does not go through the ORM
+  identity map — so `Lead`'s `cascade="all, delete-orphan"` relationships (covering
+  `agent_decisions`, `actions`, etc.) never fired. It happened to work in Milestone 1 because no
+  lead had rows in any FK-dependent table besides `messages` (deleted first, manually). Once
+  Milestone 2 started writing `AgentDecision`/`Action` rows, `db.query(Lead).delete()` started
+  failing with a `ForeignKeyViolation`. Fixed by loading and `db.delete()`-ing each `Lead`
+  instance instead, which does honor the ORM cascade — and stays correct automatically as more
+  child tables get populated in later milestones, instead of needing the delete order maintained
+  by hand.
+
+**Verification**
+- `pytest`: 20/20 passing (9 from Milestone 1, unmodified, + 11 new: classification, 5x valid
+  action selection, 3x malformed output, agent-failure resilience through the live endpoint, and
+  a regression test for the missing-credentials bug above) — all against real Postgres, no
+  network calls.
+- Manual smoke test: ran `uvicorn` against the dev database with no `ANTHROPIC_API_KEY`
+  configured, `POST /leads` via `curl` — confirmed the lead is still created (201) and, after the
+  fix above, that the failure is correctly recorded as an `AgentDecision` row (verified by
+  querying the dev DB directly). This is what surfaced both issues above; neither was caught by
+  the fake-client test suite alone.

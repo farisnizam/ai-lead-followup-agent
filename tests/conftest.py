@@ -4,9 +4,11 @@ from fastapi.testclient import TestClient
 from sqlalchemy import create_engine, event
 from sqlalchemy.orm import sessionmaker
 
+from app.agent.client import get_agent_client
 from app.config import settings
 from app.db import Base, get_db
 from app.main import app
+from tests.fakes import always_fails
 
 TEST_DB_NAME = "leadagent_test"
 
@@ -72,12 +74,30 @@ def db_session():
     engine.dispose()
 
 
+class _AgentClientHolder:
+    """Mutable holder so a test can swap the fake agent client's behavior
+    after the `client` fixture is already built, e.g.
+    `fake_agent_client.current = FakeAgentClient(tool_name=...)`."""
+
+    def __init__(self):
+        self.current = always_fails()
+
+
 @pytest.fixture()
-def client(db_session):
+def fake_agent_client():
+    return _AgentClientHolder()
+
+
+@pytest.fixture()
+def client(db_session, fake_agent_client):
     def override_get_db():
         yield db_session
 
+    def override_get_agent_client():
+        return fake_agent_client.current
+
     app.dependency_overrides[get_db] = override_get_db
+    app.dependency_overrides[get_agent_client] = override_get_agent_client
     with TestClient(app) as test_client:
         yield test_client
     app.dependency_overrides.clear()
