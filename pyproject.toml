@@ -13,6 +13,7 @@ dependencies = [
     "pydantic-settings>=2.3",
     "email-validator>=2.1",
     "anthropic>=0.68",
+    "better-profanity>=0.7",
 ]
 
 [project.optional-dependencies]

@@ -3,18 +3,7 @@ import uuid
 import pytest
 
 from app.agent.client import AgentDecisionError, AnthropicAgentClient
-from app.models import (
-    Action,
-    ActionStatus,
-    AgentDecision,
-    EscalationEvent,
-    FollowupSchedule,
-    Lead,
-    LeadIntent,
-    LeadStatus,
-    Message,
-    MessageDirection,
-)
+from app.models import Action, ActionStatus, AgentDecision, Lead, LeadIntent
 from tests.fakes import FakeAgentClient
 
 
@@ -53,9 +42,14 @@ VALID_TOOL_CASES = [
 
 
 @pytest.mark.parametrize("tool_name,tool_input", VALID_TOOL_CASES)
-def test_valid_action_selection_creates_stub_action_only(
+def test_valid_action_selection_persists_decision_and_executes(
     client, fake_agent_client, db_session, tool_name, tool_input
 ):
+    """As of Milestone 3, chosen actions execute for real (see
+    tests/test_execution.py for per-tool effect coverage) - this test stays
+    scoped to what Milestone 2 introduced: the decision/action selected by
+    the model is correctly persisted, reachable end-to-end through
+    POST /leads."""
     fake_agent_client.current = FakeAgentClient(tool_name=tool_name, tool_input=tool_input)
 
     resp = client.post(
@@ -67,21 +61,13 @@ def test_valid_action_selection_creates_stub_action_only(
 
     action = db_session.query(Action).filter_by(lead_id=lead_id).one()
     assert action.type == tool_name
-    assert action.status == ActionStatus.PENDING
+    assert action.status == ActionStatus.EXECUTED
     assert action.payload == {k: v for k, v in tool_input.items() if k not in ("intent", "rationale")}
 
     decision = db_session.query(AgentDecision).filter_by(lead_id=lead_id).one()
     assert decision.decision == tool_name
     assert decision.rationale_summary == "r"
     assert decision.model_used == "fake-model"
-
-    # Stubbed/logged-only: no tool produces a real side effect this milestone,
-    # regardless of which one the agent picked.
-    lead = db_session.get(Lead, lead_id)
-    assert lead.status == LeadStatus.NEW
-    assert db_session.query(Message).filter_by(lead_id=lead_id, direction=MessageDirection.OUT).count() == 0
-    assert db_session.query(FollowupSchedule).filter_by(lead_id=lead_id).count() == 0
-    assert db_session.query(EscalationEvent).filter_by(lead_id=lead_id).count() == 0
 
 
 MALFORMED_CASES = [

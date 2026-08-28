@@ -1,51 +1,50 @@
 # Current Status
 
-_Last updated: 2026-08-28 — end of Milestone 2_
+_Last updated: 2026-08-28 — end of Milestone 3_
 
 ## Current Milestone
 
-**Milestone 2 — agent core: complete.**
-Next up: Milestone 3 — real tool execution against the mock outbox, scheduler for time-based
-follow-ups, guardrails (rate limits, keyword escalation, unsubscribe, escalation lock).
+**Milestone 3 — real tool execution, scheduler, guardrails: complete.**
+Next up: Milestone 4 — UI (landing page, dashboard, lead detail, simulate-reply, mock outbox
+view, escalate/resolve controls).
 
 ## Completed Work
 
-- Milestone 1: project scaffolding, full 6-table schema/migrations, lead ingestion/CRUD API,
-  seed data, initial test suite. (See prior entry below for detail.)
-- Agent core (`app/agent/`): intent classification + one bounded next-action decision from the
-  fixed 5-tool set (DESIGN.md §7), in a single structured Anthropic tool-use call
-  (`tool_choice: {"type": "any"}`, `strict: true` schemas)
-- Tool input schemas are Pydantic models (`app/agent/schemas.py`) — single source of truth for
-  both the Anthropic `input_schema` and defensive re-validation of the model's response
-- Every decision persists to `agent_decisions` with a concise `rationale_summary` (never raw
-  chain-of-thought — no `thinking` block requested or stored)
-- Tool execution is stubbed/logged-only this milestone: every decision writes one `Action` row
-  (`status=pending`) and nothing else — no `Message`/`FollowupSchedule`/`EscalationEvent` rows,
-  no `Lead.status` change, for any of the 5 tools. `Lead.current_intent` is updated directly
-  (classification isn't tool-gated)
-- `decide_next_action` wired into `POST /leads` (`trigger_event="lead_created"`) — the only
-  trigger this milestone, per DESIGN.md §2's core loop
-- Resilience: an agent failure (auth, network, malformed output) never blocks lead ingestion —
-  verified through the live endpoint, not just the unit function
-- Test suite: 20/20 passing (9 from Milestone 1 unmodified + 11 new), all against real Postgres,
-  no network calls in the automated suite (fake agent client by default)
-- Two real bugs found via manual smoke testing and fixed (see dev-log): a `TypeError` from
-  missing credentials wasn't being normalized into the client's error type, so that failure mode
-  skipped the audit trail; and `scripts/seed.py`'s cleanup broke once leads had child rows beyond
-  `messages`, because bulk `Query.delete()` doesn't honor SQLAlchemy's ORM-level cascades
+- Milestones 1–2: data model/migrations, lead ingestion/CRUD API, agent core (classification +
+  bounded decision via structured Claude tool-use), seed data. (See prior entries for detail.)
+- Tools now actually execute (`app/agent/execution.py::execute_action`), within V1's mock-outbox
+  boundaries: `send_followup_email` writes an outbound `Message` and bumps `new`→`contacted`;
+  `schedule_followup` writes a `FollowupSchedule`; `update_lead_status` writes `Lead.status`;
+  `escalate_to_human` writes an `EscalationEvent` and sets `status=escalated`; `log_note` has no
+  further effect. Idempotent by construction (no-op on a non-`pending` Action).
+- Guardrails (`app/agent/guardrails.py`), matching DESIGN.md §8:
+  - Pre-LLM: unsubscribe/escalation keyword phrases + profanity (`better-profanity`) bypass the
+    model entirely; a per-lead decision-count budget (≥6) also forces escalation
+  - Execution-time (only `send_followup_email` has any, per §7): escalation/unsubscribe lock,
+    24h send cooldown, hard cap of 3 automated sends (which forces a real escalation, persisted
+    as its own `AgentDecision`+`Action`, not a bare side effect)
+- `app/agent/core.py::handle_trigger` unifies decide+execute for both trigger sources
+- Scheduler: `app/agent/followups.py::process_due_followups` (testable core) +
+  `scripts/run_scheduler.py` (thin polling-loop entrypoint, run as a separate process — see
+  dev-log for why it's not in FastAPI's lifespan)
+- Test suite: 44/44 passing (33 carried over + 11 new), real Postgres, no network calls
+- Manual smoke tests (live server + live scheduler process) confirmed the unsubscribe bypass
+  flips `lead.status` with zero LLM calls, and the scheduler picks up a due followup, marks it
+  `fired`, and triggers the agent within one poll cycle
 
 ## Work In Progress
 
-None — Milestone 2 closed out cleanly.
+None — Milestone 3 closed out cleanly.
 
-## Next Planned Steps (Milestone 3, per DESIGN.md §9)
+## Next Planned Steps (Milestone 4, per DESIGN.md §9)
 
-- Turn `pending` Actions into real effects: `send_followup_email` writes an outbound `Message`,
-  `schedule_followup` writes a `FollowupSchedule` row, `update_lead_status` actually updates
-  `Lead.status`, `escalate_to_human` writes an `EscalationEvent`
-- In-process scheduler polling `FollowupSchedule` for due follow-ups
-- Guardrails: rate limiting/cooldown, hard cap on automated follow-ups, keyword-triggered
-  deterministic escalation/unsubscribe (bypassing the LLM), escalation lock
+- Server-rendered UI (FastAPI + Jinja2, per DESIGN.md §3): landing page (lead form), dashboard,
+  lead detail (messages/status/decisions/actions), simulate-reply control, mock outbox view
+  (filtered `Message` view, `direction=out`), escalate/resolve controls
+- A reply-ingestion endpoint backing the simulate-reply control — note: the keyword-bypass check
+  in `guardrails.py` is currently gated to `trigger_event == "lead_created"` specifically to
+  avoid re-scanning old messages on every `followup_due` firing; adding a reply trigger needs its
+  own equivalent gate (flagged in code comments)
 
 ## Open Issues
 
@@ -53,23 +52,24 @@ None blocking. Noted for awareness, not urgent:
 - `starlette.testclient` emits a deprecation warning about `httpx` vs `httpx2`; tests pass, no
   action needed yet.
 - No live Anthropic API call has been exercised in this environment (no `ANTHROPIC_API_KEY`
-  configured) — the real `AnthropicAgentClient` code path is implemented and its failure mode is
-  tested, but a successful real classification+decision hasn't been observed yet. Worth a manual
-  check once a key is available.
+  configured) — real classification/decision and real guardrail fallthrough-to-LLM paths are
+  implemented and covered by fake-client tests, but never observed against the real API. Worth a
+  manual check once a key is available.
+- The Postgres dev container (`docker compose`) does not persist across host restarts/sessions in
+  this environment — needed a manual `docker compose up -d db` at the start of this milestone's
+  work. Not a code issue, just an environment note for next time.
 
 ## Active Decisions / Constraints
 
-- Sync FastAPI/SQLAlchemy (not async); UUID primary keys throughout; enums stored as `VARCHAR` +
-  `CHECK` (`native_enum=False`) — all from Milestone 1, unchanged
-- Model: Claude Sonnet 5 (`claude-sonnet-5`), per DESIGN.md §3 — now actually wired in
-  (`app/agent/client.py`), `output_config.effort="low"` (classification-type workload)
-- One Claude API call per trigger event, not a multi-turn agent loop — matches DESIGN.md §10's
-  "no unbounded multi-turn planning" non-goal
-- Stub-only tool execution is deliberately uniform across all 5 tools in Milestone 2 — no
-  exceptions for tools that would be "safe" to execute for real (e.g. `update_lead_status` is
-  just a DB write); real execution is entirely Milestone 3's job
-- Automated tests use a fake agent client exclusively (no cost, no network, deterministic);
-  the real client is only exercised manually
-- `Lead.metadata` (DESIGN.md) implemented as `lead_metadata` in code — unchanged from Milestone 1
-- Scope discipline holds: no scheduler, real tool execution, guardrail enforcement, or UI built
-  yet — see DESIGN.md §10 for the full V1 non-goals list
+- Sync FastAPI/SQLAlchemy, UUID primary keys, `VARCHAR`+`CHECK` enums, Claude Sonnet 5 — all
+  unchanged from Milestones 1–2
+- One Claude API call per trigger event, still no multi-turn agent loop (DESIGN.md §10)
+- Scheduler runs as its own process (`scripts/run_scheduler.py`), not inside the API server
+  process — a deliberate deviation from "in-process" in DESIGN.md §3's literal wording, kept for
+  test-isolation reasons (see dev-log); the "no Celery/Redis, simple polling" intent is preserved
+- Guardrail thresholds (3 sends, 24h cooldown, 6-decision budget) are plain module constants in
+  `guardrails.py`, not runtime `Settings` — DESIGN.md gives them as fixed example numbers, not
+  something meant to be reconfigured per deployment
+- `Lead.metadata` implemented as `lead_metadata` in code — unchanged from Milestone 1
+- Automated tests use a fake agent client exclusively; the real client is only exercised manually
+- Scope discipline holds: no UI, no reply-ingestion endpoint, no real SMTP — see DESIGN.md §10

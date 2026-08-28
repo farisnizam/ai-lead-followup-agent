@@ -7,6 +7,7 @@ class Settings(BaseSettings):
     database_url: str = "postgresql+psycopg://leadagent:leadagent@localhost:5432/leadagent"
     anthropic_api_key: str | None = None
     agent_model: str = "claude-sonnet-5"
+    scheduler_poll_interval_seconds: int = 30
 
 
 settings = Settings()

@@ -129,3 +129,59 @@
   fix above, that the failure is correctly recorded as an `AgentDecision` row (verified by
   querying the dev DB directly). This is what surfaced both issues above; neither was caught by
   the fake-client test suite alone.
+
+## Milestone 3 — real tool execution, scheduler, guardrails
+
+**Stack/design decisions**
+- Guardrails split into two layers, matching DESIGN.md §8's own split between "never depend on
+  the model" and rate/cap/lock enforcement:
+  - **Pre-LLM overrides** (`app/agent/guardrails.py::check_pre_llm_override`), run at the top of
+    `decide_next_action` before any API call: keyword-matched unsubscribe/escalation phrases
+    (plus profanity, via the `better-profanity` package rather than a hand-maintained word list —
+    avoids embedding a slur list in a public portfolio repo) force the corresponding tool call
+    directly; a per-lead decision-count budget (≥6) also forces escalation regardless of message
+    content, as a runaway-loop safety net that only gets real teeth this milestone now that the
+    scheduler makes repeat triggers per lead possible.
+  - **Execution-time guardrails** (`check_execution_guardrail`), run in `execute_action`: only
+    `send_followup_email` has any, per DESIGN.md §7's table — escalation/unsubscribe lock, 24h
+    cooldown, and a hard cap of 3 automated sends. A blocked action is marked
+    `status=failed` with the reason in its payload, not silently dropped.
+- Forced escalations (both the pre-LLM bypass and the hard-cap case) are persisted as full
+  `AgentDecision`+`Action` pairs (`model_used=None`), not bare side effects — reuses the same
+  `_persist_decision` helper as a normal model-produced decision, so DESIGN.md's "full audit
+  trail of agent decisions" holds for guardrail-forced actions too.
+- `execute_action` (`app/agent/execution.py`) applies the real per-tool effect now that
+  Milestone 2's stub boundary is lifted: outbound `Message` for sends, `FollowupSchedule` rows,
+  actual `Lead.status` writes, `EscalationEvent` rows. It's idempotent by construction — a no-op
+  if the `Action` isn't `pending` — which is what DESIGN.md §8 means by "dedupe by decision_id".
+- `app/agent/core.py` gained `handle_trigger` (decide + execute, unified error handling) so the
+  two trigger sources (the lead-creation endpoint and the new scheduler) share one code path
+  instead of duplicating the wiring; `app/routers/leads.py` now calls it instead of
+  `decide_next_action` directly.
+- The scheduler (`app/agent/followups.py::process_due_followups` + `scripts/run_scheduler.py`) is
+  a separate process, deliberately **not** wired into FastAPI's lifespan — `tests/conftest.py`'s
+  `client` fixture already runs `TestClient(app)` (which triggers app lifespan) on every one of
+  ~30 tests; a background poller hooked into that lifespan would start a real polling thread on
+  every test run. A plain `while True: process(); sleep(interval)` loop was used instead of
+  APScheduler — DESIGN.md §3 names both as equally acceptable, and a single periodic function
+  doesn't need a scheduling library.
+- `FollowupSchedule.status` is flipped to `fired` *before* processing (not after), so a crash
+  mid-batch can't cause the same followup to be reprocessed (and re-trigger the agent) on the
+  next poll.
+- Two Milestone 2 tests explicitly encoded the "stub-only" invariant Milestone 2 deliberately
+  imposed (`no tool produces a real side effect`) — updating them to reflect Milestone 3's actual
+  behavior is expected test evolution, not a regression: `test_valid_action_selection...` was
+  renamed and its assertions changed from `Action.status == pending` / "no side-effect rows" to
+  `Action.status == executed` (the real per-tool effect coverage now lives in the new
+  `tests/test_execution.py`, so this test stays scoped to decision persistence).
+
+**Verification**
+- `pytest`: 44/44 passing (33 carried over + 11 new across `test_guardrails.py`,
+  `test_execution.py`, `test_followups.py`), all against real Postgres, no network calls.
+- Manual smoke test: `POST /leads` with an unsubscribe-phrase message against a live server with
+  no `ANTHROPIC_API_KEY` configured — confirmed `lead.status` flipped to `unsubscribed` and the
+  decision was recorded with `model_used=None`, proving the LLM was never called for this case.
+  Also manually inserted a `FollowupSchedule` due in the near past and ran
+  `scripts/run_scheduler.py` — confirmed it picked the followup up on its first poll, marked it
+  `fired`, and produced an `AgentDecision` (which itself hit the already-known/expected
+  missing-credentials failure path from Milestone 2, handled gracefully as designed).
