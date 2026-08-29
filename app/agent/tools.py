@@ -40,10 +40,22 @@ def _inline_refs(schema: dict[str, Any]) -> dict[str, Any]:
     return schema
 
 
+def _strip_unsupported_constraints(schema: dict[str, Any]) -> dict[str, Any]:
+    """Anthropic's strict tool schemas reject `minimum`/`maximum` on integer
+    properties (confirmed against the live API - Pydantic's Field(ge=..., le=...)
+    emits these). The Pydantic model itself keeps the constraint for our own
+    defensive re-validation of the model's response (see core.py); this only
+    affects what gets sent to Anthropic."""
+    for prop in schema["properties"].values():
+        prop.pop("minimum", None)
+        prop.pop("maximum", None)
+    return schema
+
+
 def build_tool_definitions() -> list[dict[str, Any]]:
     tools = []
     for name, model in TOOL_REGISTRY.items():
-        schema = _inline_refs(model.model_json_schema())
+        schema = _strip_unsupported_constraints(_inline_refs(model.model_json_schema()))
         tools.append(
             {
                 "name": name,

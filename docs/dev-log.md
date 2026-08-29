@@ -240,3 +240,39 @@
   renders subject/recipient/body correctly (a real agent-driven send end-to-end needs a live
   Anthropic API key, which isn't configured here, but is already covered by
   `test_execution.py`'s fake-client tests).
+
+## Post-Milestone-4 bugfix — Anthropic strict tool schema rejects integer min/max
+
+Once a real `ANTHROPIC_API_KEY` was configured (the first live key used against this project),
+the very first live agent call failed with a 400, not the missing-credentials path every prior
+milestone had exercised:
+
+```
+tools.1.custom: For 'integer' type, properties maximum, minimum are not supported
+```
+
+`ScheduleFollowupInput.days_from_now` (`app/agent/schemas.py`) uses `Field(ge=1, le=14, ...)`,
+which Pydantic's `model_json_schema()` turns into `"minimum": 1, "maximum": 14`. Anthropic's
+`strict: true` tool schemas reject those keywords on integer properties. Because all 5 tool
+definitions are sent together in one request, this broke *every* decision call, not just
+`schedule_followup` ones - exactly what was observed (a plain "interested in pricing" lead also
+failed). This is precisely the kind of bug the project's fake-client test suite structurally
+cannot catch (`tests/fakes.py::FakeAgentClient` never talks to the real API), and is the reason
+manual live-key testing has been part of verification since Milestone 2.
+
+**Fix**: `app/agent/tools.py::build_tool_definitions` now strips `minimum`/`maximum` from the
+schema sent to Anthropic (`_strip_unsupported_constraints`, applied after the existing
+`_inline_refs` flattening) without touching the Pydantic model itself - `ScheduleFollowupInput`
+still enforces `ge=1, le=14` when validating the model's response
+(`core.py::_validate_tool_call`), so the "out-of-window schedule" guardrail test in
+`tests/test_agent.py` needed no changes. Added `tests/test_tools.py` - a fast, offline test that
+walks every generated tool schema and asserts `minimum`/`maximum` never appear, so this can't
+regress silently if another bounded-integer field is added to a tool input model later.
+
+**Verification**: `pytest` (60/60, all passing) confirms no regression. Re-tested live against
+the real API after restarting the server: a "pricing" lead now gets a real classification
+(`intent=pricing`), a genuinely drafted follow-up email, `model_used=claude-sonnet-5`, and the
+email actually lands in the outbound `Message`/outbox as executed - the first fully successful
+live agent run this project has had. No further schema errors surfaced (the string
+`minLength`/`maxLength` constraints used elsewhere in the same schemas were a live open question
+until this call succeeded end-to-end - they're apparently fine, only integer min/max was rejected).
