@@ -1,0 +1,157 @@
+{% extends "base.html" %}
+{% block title %}{{ lead.name }} — AI Lead Follow-up Agent{% endblock %}
+{% block content %}
+<p><a href="/dashboard">&larr; Back to dashboard</a></p>
+
+<h1>{{ lead.name }}</h1>
+<p class="muted">{{ lead.email }}{% if lead.source %} · {{ lead.source }}{% endif %}</p>
+
+<div class="card">
+  <span class="badge status-{{ lead.status.value }}">{{ lead.status.value }}</span>
+  <span class="badge">intent: {{ lead.current_intent.value if lead.current_intent else "unclassified" }}</span>
+  <span class="badge">owner: {{ lead.owner }}</span>
+  {% if next_followup %}
+  <span class="badge">next follow-up: {{ next_followup.scheduled_for.strftime("%Y-%m-%d %H:%M") }} ({{ next_followup.reason }})</span>
+  {% endif %}
+</div>
+
+{% if open_escalation %}
+<div class="card">
+  <strong>Escalated:</strong> {{ open_escalation.reason }}
+  <p class="muted">Triggered {{ open_escalation.triggered_at.strftime("%Y-%m-%d %H:%M") }}</p>
+  <form class="stacked" id="resolve-form">
+    <label for="resolved_by">Your name</label>
+    <input type="text" id="resolved_by" name="resolved_by" required>
+    <label for="resolution_notes">Resolution notes (optional)</label>
+    <textarea id="resolution_notes" name="resolution_notes"></textarea>
+    <button type="submit">Resolve escalation</button>
+  </form>
+</div>
+{% else %}
+<div class="card">
+  <form class="stacked" id="escalate-form">
+    <label for="reason">Escalate to a human</label>
+    <input type="text" id="reason" name="reason" placeholder="Reason for escalating" required>
+    <button type="submit" class="danger">Escalate</button>
+  </form>
+</div>
+{% endif %}
+
+<h2>Messages</h2>
+{% for message in messages %}
+<div class="message {{ message.direction.value }}">
+  <div class="meta">
+    {{ "Lead" if message.direction.value == "in" else "Agent" }} ·
+    {{ message.created_at.strftime("%Y-%m-%d %H:%M") }}
+    {% if message.subject %} · {{ message.subject }}{% endif %}
+  </div>
+  {{ message.body }}
+</div>
+{% else %}
+<p class="muted">No messages yet.</p>
+{% endfor %}
+
+<h2>Simulate a reply</h2>
+<form class="stacked" id="reply-form">
+  <textarea id="reply-body" name="body" required placeholder="Reply as this lead..."></textarea>
+  <button type="submit">Send reply</button>
+</form>
+
+<h2>Agent decisions</h2>
+{% if decisions %}
+<table>
+  <thead>
+    <tr><th>When</th><th>Trigger</th><th>Decision</th><th>Rationale</th><th>Model</th></tr>
+  </thead>
+  <tbody>
+    {% for decision in decisions %}
+    <tr>
+      <td>{{ decision.created_at.strftime("%Y-%m-%d %H:%M") }}</td>
+      <td>{{ decision.trigger_event }}</td>
+      <td>{{ decision.decision }}</td>
+      <td>{{ decision.rationale_summary }}</td>
+      <td>{{ decision.model_used or "—" }}</td>
+    </tr>
+    {% endfor %}
+  </tbody>
+</table>
+{% else %}
+<p class="muted">No decisions yet.</p>
+{% endif %}
+
+<h2>Actions</h2>
+{% if actions %}
+<table>
+  <thead>
+    <tr><th>When</th><th>Type</th><th>Status</th><th>Payload</th></tr>
+  </thead>
+  <tbody>
+    {% for action in actions %}
+    <tr>
+      <td>{{ action.created_at.strftime("%Y-%m-%d %H:%M") }}</td>
+      <td>{{ action.type }}</td>
+      <td><span class="badge action-{{ action.status.value }}">{{ action.status.value }}</span></td>
+      <td>{{ action.payload }}</td>
+    </tr>
+    {% endfor %}
+  </tbody>
+</table>
+{% else %}
+<p class="muted">No actions yet.</p>
+{% endif %}
+
+{% if escalations %}
+<h2>Escalation history</h2>
+<table>
+  <thead>
+    <tr><th>Triggered</th><th>Reason</th><th>Resolved</th><th>Resolved by</th><th>Notes</th></tr>
+  </thead>
+  <tbody>
+    {% for escalation in escalations %}
+    <tr>
+      <td>{{ escalation.triggered_at.strftime("%Y-%m-%d %H:%M") }}</td>
+      <td>{{ escalation.reason }}</td>
+      <td>{{ escalation.resolved_at.strftime("%Y-%m-%d %H:%M") if escalation.resolved_at else "open" }}</td>
+      <td>{{ escalation.resolved_by or "—" }}</td>
+      <td>{{ escalation.resolution_notes or "—" }}</td>
+    </tr>
+    {% endfor %}
+  </tbody>
+</table>
+{% endif %}
+{% endblock %}
+
+{% block scripts %}
+<script>
+  const leadId = "{{ lead.id }}";
+
+  document.getElementById("reply-form").addEventListener("submit", async (event) => {
+    event.preventDefault();
+    const body = document.getElementById("reply-body").value;
+    await postJSON(`/leads/${leadId}/messages`, { body });
+    window.location.reload();
+  });
+
+  const escalateForm = document.getElementById("escalate-form");
+  if (escalateForm) {
+    escalateForm.addEventListener("submit", async (event) => {
+      event.preventDefault();
+      const reason = event.target.reason.value;
+      await postJSON(`/leads/${leadId}/escalate`, { reason });
+      window.location.reload();
+    });
+  }
+
+  const resolveForm = document.getElementById("resolve-form");
+  if (resolveForm) {
+    resolveForm.addEventListener("submit", async (event) => {
+      event.preventDefault();
+      await postJSON(`/leads/${leadId}/resolve`, {
+        resolved_by: event.target.resolved_by.value,
+        resolution_notes: event.target.resolution_notes.value || null,
+      });
+      window.location.reload();
+    });
+  }
+</script>
+{% endblock %}

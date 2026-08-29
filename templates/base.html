@@ -1,0 +1,49 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{% block title %}AI Lead Follow-up Agent{% endblock %}</title>
+  <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+  <nav>
+    <span class="brand">AI Lead Follow-up Agent</span>
+    <a href="/">Landing page</a>
+    <a href="/dashboard">Dashboard</a>
+    <a href="/outbox">Outbox</a>
+  </nav>
+  <main>
+    {% block content %}{% endblock %}
+  </main>
+  <script>
+    // Shared helper for the small forms/buttons on these pages: POST JSON,
+    // reload on success, show an inline error banner on failure. No SPA
+    // framework - every action just re-renders the page from the server.
+    async function postJSON(url, body) {
+      const errorBanner = document.getElementById("error-banner");
+      if (errorBanner) errorBanner.remove();
+      try {
+        const resp = await fetch(url, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(body),
+        });
+        if (!resp.ok) {
+          const data = await resp.json().catch(() => ({}));
+          throw new Error(data.detail || `Request failed (${resp.status})`);
+        }
+        return await resp.json();
+      } catch (err) {
+        const banner = document.createElement("div");
+        banner.id = "error-banner";
+        banner.className = "error-banner";
+        banner.textContent = err.message;
+        document.querySelector("main").prepend(banner);
+        throw err;
+      }
+    }
+  </script>
+  {% block scripts %}{% endblock %}
+</body>
+</html>

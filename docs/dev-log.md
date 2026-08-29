@@ -185,3 +185,58 @@
   `scripts/run_scheduler.py` — confirmed it picked the followup up on its first poll, marked it
   `fired`, and produced an `AgentDecision` (which itself hit the already-known/expected
   missing-credentials failure path from Milestone 2, handled gracefully as designed).
+
+## Milestone 4 — UI
+
+**Stack/design decisions**
+- Server-rendered pages (`app/routers/pages.py`, Jinja2 via `fastapi.templating`) that query the
+  DB directly, per DESIGN.md §3 — not a SPA, no new frontend build step. Interactivity (submit
+  lead, simulate reply, escalate, resolve) is a small shared `postJSON()` helper in
+  `templates/base.html`: `fetch()` the existing/new JSON endpoints, then `location.reload()` on
+  success. No HTMX, no `python-multipart` (nothing parses form-encoded bodies server-side — every
+  form submit goes through JSON).
+- Distinct URL namespace for pages (`/`, `/dashboard`, `/dashboard/{id}`, `/outbox`) so there's no
+  collision with the existing `/leads...` JSON API — the two stay cleanly separated rather than
+  the HTML routes shadowing or nesting under the API's paths.
+- Three new JSON endpoints added to the existing `/leads` router, matching `create_lead`'s
+  established shape exactly (mutate, commit, wrap the agent-triggering ones in try/except, return
+  `LeadDetail`): `POST /leads/{id}/messages` (simulate-reply backend, `trigger_event=
+  "reply_received"`), `POST /leads/{id}/escalate` (human-initiated — writes `EscalationEvent` +
+  status directly, no `AgentDecision`/`Action` rows, since it isn't an agent decision),
+  `POST /leads/{id}/resolve` (resolves the latest open `EscalationEvent`, sets
+  `status=contacted`).
+- `resolve` intentionally does **not** reset the hard-cap send counter
+  (`check_execution_guardrail` counts all-time executed sends for a lead) — if the agent tries to
+  send again post-resolution and immediately re-hits the cap, it re-escalates rather than
+  silently resuming automated sends right after a human had to step in. `contacted` (not
+  `engaged`) was chosen as the post-resolve status since it's the most neutral true statement
+  regardless of how the human's intervention actually went.
+- Generalized `guardrails.py`'s keyword-bypass gate from a single `trigger_event == "lead_created"`
+  check to a `MESSAGE_DRIVEN_TRIGGERS = {"lead_created", "reply_received"}` set — this was already
+  flagged as needed in `docs/current-status.md` before this milestone started (both trigger types
+  carry a fresh inbound message worth scanning; `followup_due` doesn't).
+- Lead detail page eager-loads all five of `Lead`'s relationships (`messages`, `decisions`,
+  `actions`, `followups`, `escalations`) — all have existed since Milestone 1's schema but nothing
+  had displayed them until now.
+
+**Issues hit and fixed during implementation**
+- None that surfaced during manual verification this time — the main risk area (Starlette's
+  redirect-slashes behavior returning a 307 for a route with a path parameter) turned out to be a
+  scripting mistake on my end (a shell variable that didn't persist across separate command
+  invocations, so the lead-id path segment was empty), not an application bug. Re-ran the same
+  check within a single shell session and confirmed the route behaves correctly.
+
+**Verification**
+- `pytest`: 57/57 passing (44 carried over + 13 new across `test_lead_actions.py`,
+  `test_pages.py`, and 2 more in `test_guardrails.py`), real Postgres, no network calls.
+- `claude-in-chrome` was not connected in this environment, so real browser/JS-click verification
+  wasn't possible this session — noted explicitly rather than claiming full UI verification.
+  Substituted thorough `curl`-based verification of the actual HTTP/HTML layer instead: submitted
+  a lead with an escalation-phrase message through the real `POST /leads` endpoint (the same call
+  the landing page's JS makes), confirmed the dashboard lists it, confirmed the lead detail page
+  renders the escalation banner/resolve form/message body/rationale, resolved the escalation and
+  confirmed the page switches back to the escalate form, submitted a reply and confirmed it
+  appears in the thread, and inserted a manual outbound message to confirm the outbox template
+  renders subject/recipient/body correctly (a real agent-driven send end-to-end needs a live
+  Anthropic API key, which isn't configured here, but is already covered by
+  `test_execution.py`'s fake-client tests).

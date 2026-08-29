@@ -22,6 +22,11 @@ MAX_AUTOMATED_FOLLOWUPS = 3
 SEND_COOLDOWN = timedelta(hours=24)
 MAX_DECISIONS_PER_LEAD = 6
 
+# Triggers that carry a fresh inbound message worth scanning for keywords.
+# followup_due does not - it would just re-scan whatever message was already
+# there the last time this lead was looked at.
+MESSAGE_DRIVEN_TRIGGERS = {"lead_created", "reply_received"}
+
 
 def _contains_any(text: str, phrases: list[str]) -> bool:
     lowered = text.lower()
@@ -45,10 +50,8 @@ def check_pre_llm_override(
         )
 
     # Keyword bypass: only meaningful when this trigger carries a fresh
-    # inbound message to scan. Today that's only "lead_created" - a future
-    # reply trigger needs its own equivalent, or this would re-scan the same
-    # old message on every later followup_due firing.
-    if trigger_event == "lead_created" and snapshot["messages"]:
+    # inbound message to scan (see MESSAGE_DRIVEN_TRIGGERS above).
+    if trigger_event in MESSAGE_DRIVEN_TRIGGERS and snapshot["messages"]:
         latest = snapshot["messages"][-1]["body"]
         if _contains_any(latest, UNSUBSCRIBE_PHRASES):
             return "update_lead_status", UpdateLeadStatusInput(

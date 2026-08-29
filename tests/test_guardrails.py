@@ -44,10 +44,23 @@ def test_benign_message_does_not_bypass(db_session):
     assert result is None
 
 
-def test_non_lead_created_trigger_does_not_scan_message(db_session):
+def test_non_message_driven_trigger_does_not_scan_message(db_session):
     lead = _make_lead(db_session, message_body="unsubscribe me now")
     result = check_pre_llm_override(db_session, lead, "followup_due", _snapshot(lead))
     assert result is None
+
+
+def test_unsubscribe_phrase_in_reply_also_bypasses_llm(db_session):
+    """The keyword bypass must cover reply_received the same way it covers
+    lead_created - both carry a fresh inbound message to scan."""
+    lead = _make_lead(db_session, message_body="hi")
+    lead.messages.append(Message(direction=MessageDirection.IN, body="Actually, please unsubscribe me."))
+    db_session.commit()
+    db_session.refresh(lead)
+
+    result = check_pre_llm_override(db_session, lead, "reply_received", _snapshot(lead))
+    assert result is not None
+    assert result[0] == "update_lead_status"
 
 
 def test_decision_budget_forces_escalation(db_session):

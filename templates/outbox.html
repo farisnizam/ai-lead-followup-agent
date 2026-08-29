@@ -1,0 +1,22 @@
+{% extends "base.html" %}
+{% block title %}Outbox — AI Lead Follow-up Agent{% endblock %}
+{% block content %}
+<h1>Outbox</h1>
+<p class="muted">Every email the agent has "sent" — no real delivery happens in this demo; outbound
+messages are written here instead so you can inspect them.</p>
+
+{% if messages %}
+{% for message in messages %}
+<div class="card">
+  <div class="meta">
+    To <a class="row-link" href="/dashboard/{{ message.lead.id }}">{{ message.lead.name }}</a>
+    ({{ message.lead.email }}) · {{ message.created_at.strftime("%Y-%m-%d %H:%M") }}
+  </div>
+  <strong>{{ message.subject or "(no subject)" }}</strong>
+  <p>{{ message.body }}</p>
+</div>
+{% endfor %}
+{% else %}
+<p class="muted">Nothing sent yet.</p>
+{% endif %}
+{% endblock %}

@@ -29,6 +29,19 @@ class LeadUpdate(BaseModel):
     status: LeadStatus
 
 
+class MessageCreate(BaseModel):
+    body: str
+
+
+class EscalateRequest(BaseModel):
+    reason: str
+
+
+class ResolveRequest(BaseModel):
+    resolved_by: str
+    resolution_notes: str | None = None
+
+
 class LeadRead(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 

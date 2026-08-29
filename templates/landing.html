@@ -1,0 +1,48 @@
+{% extends "base.html" %}
+{% block title %}Get in touch — AI Lead Follow-up Agent{% endblock %}
+{% block content %}
+<h1>Tell us what you're looking for</h1>
+<p class="muted">
+  Submit this form the way a lead would on a real landing page. An AI agent reads it, classifies
+  intent, and decides the next step — you'll land on that lead's page to watch it happen.
+</p>
+
+<form class="stacked" id="lead-form">
+  <div>
+    <label for="name">Name</label>
+    <input type="text" id="name" name="name" required>
+  </div>
+  <div>
+    <label for="email">Email</label>
+    <input type="email" id="email" name="email" required>
+  </div>
+  <div>
+    <label for="message">What are you interested in?</label>
+    <textarea id="message" name="message" required
+      placeholder="e.g. I'd like to know more about pricing for a team of 10."></textarea>
+  </div>
+  <button type="submit">Submit</button>
+</form>
+{% endblock %}
+
+{% block scripts %}
+<script>
+  document.getElementById("lead-form").addEventListener("submit", async (event) => {
+    event.preventDefault();
+    const form = event.target;
+    const submitButton = form.querySelector("button");
+    submitButton.disabled = true;
+    try {
+      const lead = await postJSON("/leads", {
+        name: form.name.value,
+        email: form.email.value,
+        source: "landing_page",
+        message: form.message.value,
+      });
+      window.location.href = `/dashboard/${lead.id}`;
+    } catch (err) {
+      submitButton.disabled = false;
+    }
+  });
+</script>
+{% endblock %}
