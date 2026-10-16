@@ -11,6 +11,14 @@ by hand, see [docs/manual-testing-guide.md](docs/manual-testing-guide.md).
 **Status:** V1 functionally complete (Milestones 1–4): data model, lead ingestion, agent core
 (Claude tool-use), real tool execution, scheduler, guardrails, and a browser UI.
 
+## Why this design
+
+- **One bounded tool per event.** The model must call exactly one of five tools (`tool_choice: any`, strict schemas). There is no tool that deletes data, runs SQL or touches another lead.
+- **Compliance never depends on the model.** "Unsubscribe", "speak to a human", escalation phrases and profanity are matched in code *before* the LLM is called (`app/agent/guardrails.py`).
+- **The model decides, code acts.** Every tool call is re-validated against the same Pydantic models that generate the tool schemas, then passes execution-time guardrails (24h send cooldown, 3-email cap → forced escalation, escalation/unsubscribe lock). Execution is idempotent per decision.
+- **Everything is auditable.** Each decision stores the trigger, an input snapshot, a short rationale, the model used (or `None` when a guardrail decided), and the resulting action.
+- **Tested without the network.** 60 tests run against real Postgres with a fake LLM client; the live API path is verified by hand. That is how a strict-schema incompatibility that mocks couldn't catch was found and fixed (see `docs/dev-log.md`).
+
 ## Quickstart
 
 Five steps to a running app. Run each block in order from the project root.
