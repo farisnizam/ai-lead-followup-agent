@@ -1,15 +1,47 @@
 # AI Lead Follow-up Agent
 
-An AI agent that reads inbound leads, classifies intent, decides the next action from a fixed
-tool set, and executes it — with deterministic guardrails, a full audit trail, and a
-human-in-the-loop escalation flow. Portfolio MVP; see [DESIGN.md](DESIGN.md) for the full design
-(problem statement, architecture, data model, guardrails, milestones). Engineering decisions and
-issues hit along the way are logged in [docs/dev-log.md](docs/dev-log.md); current build status
-is in [docs/current-status.md](docs/current-status.md). To exercise every guardrail/decision path
-by hand, see [docs/manual-testing-guide.md](docs/manual-testing-guide.md).
+**An LLM agent that follows up with sales leads, built so it can't go off the rails.**
+Claude reads the conversation, classifies intent and picks exactly one action from a bounded tool set.
+Code then validates the choice, applies deterministic guardrails, executes it and logs it.
+Humans can take over at any time.
 
-**Status:** V1 functionally complete (Milestones 1–4): data model, lead ingestion, agent core
-(Claude tool-use), real tool execution, scheduler, guardrails, and a browser UI.
+![Python](https://img.shields.io/badge/Python-3.12-3776AB?logo=python&logoColor=white)
+![FastAPI](https://img.shields.io/badge/FastAPI-009688?logo=fastapi&logoColor=white)
+![PostgreSQL](https://img.shields.io/badge/PostgreSQL-16-4169E1?logo=postgresql&logoColor=white)
+![Claude](https://img.shields.io/badge/Claude-tool%20use-D97757)
+![Tests](https://img.shields.io/badge/tests-60%20passing-brightgreen)
+
+<!-- TODO: record a 30–45s demo and uncomment:
+<p align="center"><img src="docs/demo.gif" alt="Submit a lead → agent decides → reply 'speak to a human' → escalation" width="800"></p>
+-->
+
+## How it works
+
+```mermaid
+flowchart TD
+    T["Trigger<br/>new lead · reply · follow-up due"] --> G1{"Pre-LLM guardrails<br/>unsubscribe · escalation phrases<br/>profanity · decision budget"}
+    G1 -- match --> D["Decision recorded<br/>(model = none)"]
+    G1 -- no match --> L["Claude<br/>classify intent + choose ONE tool<br/>+ short rationale"]
+    L --> V{"Schema validation<br/>(same Pydantic models<br/>that define the tools)"}
+    V -- invalid --> X["Logged as invalid_output<br/>no retry, no crash"]
+    V -- valid --> D
+    D --> G2{"Execution guardrails<br/>24h cooldown · 3-email cap<br/>escalation / unsubscribe lock"}
+    G2 -- blocked --> B["Action failed + reason<br/>(cap → forced escalation)"]
+    G2 -- allowed --> E["Execute<br/>email · schedule · status · escalate · note"]
+    E --> A[("Audit trail<br/>decisions · actions · messages")]
+    S["Scheduler"] -. follow-up due .-> T
+    H["Human<br/>escalate / resolve"] -. takes over .-> A
+```
+
+**The five tools:** `send_followup_email` · `schedule_followup` (1–14 days) · `update_lead_status` · `escalate_to_human` · `log_note`.
+Nothing else is possible: no SQL, no deletes, no access to other leads.
+
+**More detail:** [DESIGN.md](DESIGN.md) (problem, architecture, data model, guardrails) ·
+[docs/dev-log.md](docs/dev-log.md) (decisions and bugs along the way) ·
+[docs/manual-testing-guide.md](docs/manual-testing-guide.md) (exercise every path by hand).
+
+**Status:** V1 complete: ingestion, agent core, tool execution, scheduler, guardrails, browser UI.
+**Next:** an evaluation set for intent and action accuracy, and a hosted demo.
 
 ## Why this design
 
